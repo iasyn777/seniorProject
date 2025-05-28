@@ -1,22 +1,11 @@
 import pyodbc
 import pymysql
 import uuid
+from utils import decode_guid_strict
 from db_config import MSSQL_CONN, MYSQL_CONN
 
 # HEX строка GUID типа цены (без кавычек, без 0x)
 PRICE_TYPE_HEX = "9A6E000C2919E56D11F00E4E2FB3B2E3"
-
-def decode_guid_strict(b: bytes) -> str:
-    if len(b) != 16:
-        raise ValueError("Ожидано 16 байт")
-
-    return (
-        f"{b[12]:02x}{b[13]:02x}{b[14]:02x}{b[15]:02x}-"  # 20 dd c7 07
-        f"{b[10]:02x}{b[11]:02x}-"  # 13 02
-        f"{b[8]:02x}{b[9]:02x}-"  # 11 f0
-        f"{b[0]:02x}{b[1]:02x}-"  # 9a 6e
-        f"{b[2]:02x}{b[3]:02x}{b[4]:02x}{b[5]:02x}{b[6]:02x}{b[7]:02x}"  # 00 0c 29 19 e5 6d
-    )
 
 def sync_products():
     mssql = pyodbc.connect(
@@ -63,6 +52,7 @@ def sync_products():
 
     for row in ms_cursor.fetchall():
         product_id = decode_guid_strict(row[0])  # id_bin
+        product_ic_guid = row[0].hex().upper()  # HEX строка без 0x
         product_name = row[1] if row[1] is not None else None
         product_desc = row[2]
         parent_bin = row[3]
@@ -73,36 +63,78 @@ def sync_products():
         if parent_bin and parent_bin != b'\x00' * 16:
             category_id = decode_guid_strict(parent_bin)
 
-        my_cursor.execute("""
-                    SELECT name, description, price
-                    FROM products_test
-                    WHERE id = %s
-                """, (product_id,))
-        existing = my_cursor.fetchone()
-
-        print(f"MSSQL: name={product_name}, desc={product_desc}, price={price}")
-        print(f"MySQL: {existing}")
-
-        # Проверка на дубли
-        if existing is None:
+            # Проверка на существование по id
             my_cursor.execute("""
-                    INSERT INTO products_test (id, name, description, price)
-                    VALUES (%s, %s, %s, %s)
-                """, (product_id, product_name, product_desc, price))
-            inserted += 1
-        else:
-            existing_id, existing_desc, existing_price = existing
-            if (
-                    existing_desc != product_desc or
-                    round(float(existing_price), 2) != round(price, 2)
-            ):
-                print(f"Updating {product_name}: price {existing_price} -> {price}")
+                SELECT name, description, price, ic_guid
+                FROM products_test
+                WHERE id = %s
+            """, (product_id,))
+            existing = my_cursor.fetchone()
+
+            if existing is None:
                 my_cursor.execute("""
+                    INSERT INTO products_test (id, ic_guid, name, description, price)
+                    VALUES (%s, %s, %s, %s, %s)
+                """, (product_id, product_ic_guid, product_name, product_desc, price))
+                inserted += 1
+            else:
+                existing_name, existing_desc, existing_price, existing_guid = existing
+                if (
+                        existing_desc != product_desc or
+                        round(float(existing_price), 2) != round(price, 2)
+                ):
+                    my_cursor.execute("""
                         UPDATE products_test
-                        SET id = %s, description = %s, price = %s
-                        WHERE name = %s
-                    """, (product_id, product_desc, price, product_name))
-                updated += 1
+                        SET name = %s, description = %s, price = %s, ic_guid = %s
+                        WHERE id = %s
+                    """, (product_name, product_desc, price, product_ic_guid, product_id))
+                    updated += 1
+
+            # Доп реквизиты
+
+        ms_cursor.execute("""
+               SELECT VT._Fld5925RRef, VT._Fld5926_RRRef
+               FROM dbo._Reference266_VT5923 VT
+               WHERE VT._Reference266_IDRRef = ?
+           """, row[0])
+
+        for rec in ms_cursor.fetchall():
+            prop_id_bin, val_id_bin = rec
+            prop_id = decode_guid_strict(prop_id_bin)
+            val_id = decode_guid_strict(val_id_bin)
+
+            # Название реквизита
+            ms_cursor.execute("SELECT _Description FROM dbo._Chrc1508 WHERE _IDRRef = ?", prop_id_bin)
+            prop_name_row = ms_cursor.fetchone()
+            if not prop_name_row: continue
+            prop_name = prop_name_row[0]
+
+            # Значение реквизита
+            ms_cursor.execute("SELECT _Description FROM dbo._Reference173 WHERE _IDRRef = ?", val_id_bin)
+            val_name_row = ms_cursor.fetchone()
+            if not val_name_row: continue
+            val_name = val_name_row[0]
+
+            # INSERT property
+            my_cursor.execute("""
+                        INSERT INTO properties_test (id, name)
+                        VALUES (%s, %s)
+                        ON DUPLICATE KEY UPDATE name=VALUES(name)
+                    """, (prop_id, prop_name))
+
+            # INSERT property_value
+            my_cursor.execute("""
+                INSERT INTO property_values_test (id, property_id, name)
+                VALUES (%s, %s, %s)
+                ON DUPLICATE KEY UPDATE name=VALUES(name), property_id=VALUES(property_id)
+            """, (val_id, prop_id, val_name))
+
+            # INSERT product_property
+            my_cursor.execute("""
+                        INSERT INTO product_properties_test (product_id, property_id, property_value_id	)
+                        VALUES (%s, %s, %s)
+                        ON DUPLICATE KEY UPDATE property_value_id	=VALUES(property_value_id)
+                    """, (product_id, prop_id, val_id))
 
     mysql.commit()
     print(f"✅ Добавлено: {inserted}, Обновлено: {updated}")
