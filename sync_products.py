@@ -23,7 +23,8 @@ def sync_products():
         f"DRIVER={MSSQL_CONN['driver']};"
         f"SERVER={MSSQL_CONN['server']};"
         f"DATABASE={MSSQL_CONN['database']};"
-        f"Trusted_Connection={MSSQL_CONN['trusted_connection']}"
+            f"UID={MSSQL_CONN['uid']};"
+            f"PWD={MSSQL_CONN['pwd']};"
     )
     ms_cursor = mssql.cursor()
 

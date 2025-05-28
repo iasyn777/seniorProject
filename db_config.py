@@ -4,11 +4,14 @@ from dotenv import load_dotenv
 load_dotenv()
 
 MSSQL_CONN = {
-    'driver': '{SQL Server}',
-    'server': 'localhost\\SQLEXPRESS',
+    'driver': '{ODBC Driver 17 for SQL Server}',
+    'server': '213.109.67.27, 1433',
     'database': 'diplom',
-    'trusted_connection': 'yes'
+    'uid': 'user',
+    'pwd': 'E6DzQo#Q47CeE6DzQo#Q47Ce',
 }
+
+
 MYSQL_CONN = {
     'host': '127.0.0.1',
     'port': 3306,  # туннель идёт через этот порт
