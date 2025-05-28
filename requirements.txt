@@ -1,0 +1,3 @@
+pyodbc
+pymysql
+python-dotenv
